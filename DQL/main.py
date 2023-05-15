@@ -3,14 +3,18 @@ import gymnasium as gym
 import numpy as np
 import random
 import statistics
+from gymnasium.envs.toy_text.frozen_lake import generate_random_map
+
 
 D = []
+#mbs = []
 oi = 0
 
-memsize = 100
-minibatch_size = 32
-n_episodes = 1000
-n_dense = 16
+minibatch_size = 5
+memsize = 100 * minibatch_size
+n_episodes = 400
+n_extra = 5
+n_dense = 40
 rand_eps = 1
 gamma = 0.9
 
@@ -19,14 +23,19 @@ Q.add(tf.keras.layers.Dense(n_dense, input_shape=(3,), activation = 'relu'))
 Q.add(tf.keras.layers.Dense(n_dense, activation = 'relu'))
 Q.add(tf.keras.layers.Dense(1))
 
-opt = tf.keras.optimizers.SGD(learning_rate=1e-4)
+opt = tf.keras.optimizers.SGD(learning_rate=1e-3)
 
 Q.compile(optimizer=opt)
 
-env = gym.make("FrozenLake-v1", desc=None, map_name="4x4")
+QE = lambda x: Q(tf.constant([x]))
+
+env_map = generate_random_map(size=5)
+list(map(print,env_map))
+
+env = gym.make("FrozenLake-v1", desc=env_map, is_slippery = False)
 
 def split(obvs):
-    pck = (4,)
+    pck = (len(env_map),)
     r = []
     for i in pck:
         r.append(obvs%i)
@@ -34,10 +43,9 @@ def split(obvs):
     r.append(obvs)
     return r
 
-for eps in range(n_episodes+10):
+for eps in range(n_episodes+n_extra):
     if eps >= n_episodes:
-        env = gym.make("FrozenLake-v1", desc=None, map_name="4x4", render_mode="human")
-        input("done!")
+        env = gym.make("FrozenLake-v1", desc=env_map, render_mode="human", is_slippery=False)
     obvs, info = env.reset()
 
     losses = []
@@ -64,30 +72,42 @@ for eps in range(n_episodes+10):
             D[oi] = tr
             oi = (oi + 1) % memsize
 
+
+        minibatch = []
         for (obs, action, reward, obs_next, terminated) in random.sample(D, min((len(D)+1)//2, minibatch_size)):
             y = reward
             if not terminated:
-                y += gamma * max(Q(tf.constant([[x] + obs_next])) for x in range(4))
+                y += gamma * max(float(Q(tf.constant([[x] + obs_next]))) for x in range(4))
+            x = tf.constant([[action] + obs])
+            minibatch.append((x,y))
 
-            with tf.GradientTape() as tp:
-                loss = (y - Q(tf.constant([[action] + obs])))**2
-            losses.append(loss)
-            grads = tp.gradient(loss, Q.trainable_weights)
-            opt.apply_gradients(zip(grads,Q.trainable_weights))
+        with tf.GradientTape() as tp:
+            loss = 0
+            for x,y in minibatch:            
+                loss_obs = (y - Q(x))**2
+                loss += loss_obs
+                losses.append(loss_obs)
+        
+        grads = tp.gradient(loss, Q.trainable_weights)
+        opt.apply_gradients(zip(grads,Q.trainable_weights))
+    '''
+        loss0 = loss
+        loss = 0
+        for x,y in minibatch:            
+            loss_obs = (y - Q(x))**2
+            loss += loss_obs
+            losses.append(loss_obs)
+        print(loss0 - loss)
+    '''
+
+        #mbs.append([(list(x.numpy()),y) for x,y in minibatch])
+        
         
         if trm:
             break
     
     print(f"run {eps+1} done: mean loss = {statistics.mean(map(float,losses))}, mean reward = {statistics.mean(rewards)}, length = {len(rewards)}")
 
-    rand_eps -= 1/600
-
-
+    rand_eps -= 2/n_episodes
 
 env.close()
-
-while True:
-    try:
-        eval(input())
-    except:
-        pass
